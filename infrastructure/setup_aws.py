@@ -31,6 +31,10 @@ from config import (
 DRY = False
 
 
+def _warn(msg: str) -> None:
+    print(f"  !  {msg}")
+
+
 def _info(msg: str) -> None:
     print(f"  ✓  {msg}")
 
@@ -104,37 +108,55 @@ def setup_s3() -> None:
 
 
 # ─── Kinesis ──────────────────────────────────────────────────────────────────
-def setup_kinesis() -> None:
+def setup_kinesis() -> bool:
     print("\n── Kinesis ───────────────────────────────────────")
     kinesis = boto3.client("kinesis", region_name=AWS_REGION)
 
     if DRY:
         _dry(f"Kinesis stream: {KINESIS_STREAM_NAME}  shards={KINESIS_SHARD_COUNT}")
-        return
+        return True
+
+    def _is_subscription_error(exc: ClientError) -> bool:
+        return exc.response.get("Error", {}).get("Code") == "SubscriptionRequiredException"
 
     try:
         kinesis.describe_stream_summary(StreamName=KINESIS_STREAM_NAME)
         _skip(f"Kinesis stream {KINESIS_STREAM_NAME}")
+        return True
     except kinesis.exceptions.ResourceNotFoundException:
-        kinesis.create_stream(StreamName=KINESIS_STREAM_NAME, ShardCount=KINESIS_SHARD_COUNT)
-        # Enable server-side encryption
-        kinesis.start_stream_encryption(
-            StreamName=KINESIS_STREAM_NAME,
-            EncryptionType="KMS",
-            KeyId="alias/aws/kinesis",
-        )
-        # Wait for ACTIVE
-        waiter = kinesis.get_waiter("stream_exists")
-        waiter.wait(StreamName=KINESIS_STREAM_NAME)
-        _info(f"Created Kinesis stream: {KINESIS_STREAM_NAME}  shards={KINESIS_SHARD_COUNT}")
+        try:
+            kinesis.create_stream(StreamName=KINESIS_STREAM_NAME, ShardCount=KINESIS_SHARD_COUNT)
+            # Enable server-side encryption
+            kinesis.start_stream_encryption(
+                StreamName=KINESIS_STREAM_NAME,
+                EncryptionType="KMS",
+                KeyId="alias/aws/kinesis",
+            )
+            # Wait for ACTIVE
+            waiter = kinesis.get_waiter("stream_exists")
+            waiter.wait(StreamName=KINESIS_STREAM_NAME)
+            _info(f"Created Kinesis stream: {KINESIS_STREAM_NAME}  shards={KINESIS_SHARD_COUNT}")
 
-        # Enhanced fan-out (1 per consumer)
-        kinesis.register_stream_consumer(
-            StreamARN=kinesis.describe_stream_summary(StreamName=KINESIS_STREAM_NAME)
-                      ["StreamDescriptionSummary"]["StreamARN"],
-            ConsumerName="cloudpulse-speed-layer",
-        )
-        _info("Registered enhanced fan-out consumer")
+            # Enhanced fan-out (1 per consumer)
+            kinesis.register_stream_consumer(
+                StreamARN=kinesis.describe_stream_summary(StreamName=KINESIS_STREAM_NAME)
+                          ["StreamDescriptionSummary"]["StreamARN"],
+                ConsumerName="cloudpulse-speed-layer",
+            )
+            _info("Registered enhanced fan-out consumer")
+            return True
+        except ClientError as exc:
+            if _is_subscription_error(exc):
+                _warn("Kinesis is not enabled for this account (SubscriptionRequiredException).")
+                _warn("Proceeding without Kinesis. Lambda trigger will be skipped.")
+                return False
+            raise
+    except ClientError as exc:
+        if _is_subscription_error(exc):
+            _warn("Kinesis is not enabled for this account (SubscriptionRequiredException).")
+            _warn("Proceeding without Kinesis. Lambda trigger will be skipped.")
+            return False
+        raise
 
 
 # ─── DynamoDB ─────────────────────────────────────────────────────────────────
@@ -168,7 +190,7 @@ def setup_dynamodb() -> None:
 
 
 # ─── Lambda ───────────────────────────────────────────────────────────────────
-def setup_lambda() -> None:
+def setup_lambda(kinesis_enabled: bool = True) -> None:
     print("\n── Lambda ────────────────────────────────────────")
     lmb = boto3.client("lambda", region_name=AWS_REGION)
     iam = boto3.client("iam",    region_name=AWS_REGION)
@@ -218,18 +240,21 @@ def setup_lambda() -> None:
         )
         _info(f"Created Lambda function: {fn_name}")
 
-        # Add Kinesis trigger
-        stream_arn = boto3.client("kinesis", region_name=AWS_REGION) \
-            .describe_stream_summary(StreamName=KINESIS_STREAM_NAME) \
-            ["StreamDescriptionSummary"]["StreamARN"]
-        lmb.create_event_source_mapping(
-            EventSourceArn=stream_arn,
-            FunctionName=fn_name,
-            StartingPosition="LATEST",
-            BatchSize=100,
-            BisectBatchOnFunctionError=True,
-        )
-        _info(f"Added Kinesis trigger to Lambda (batch=100)")
+        if kinesis_enabled:
+            # Add Kinesis trigger
+            stream_arn = boto3.client("kinesis", region_name=AWS_REGION) \
+                .describe_stream_summary(StreamName=KINESIS_STREAM_NAME) \
+                ["StreamDescriptionSummary"]["StreamARN"]
+            lmb.create_event_source_mapping(
+                EventSourceArn=stream_arn,
+                FunctionName=fn_name,
+                StartingPosition="LATEST",
+                BatchSize=100,
+                BisectBatchOnFunctionError=True,
+            )
+            _info("Added Kinesis trigger to Lambda (batch=100)")
+        else:
+            _warn("Skipped Lambda Kinesis trigger because Kinesis is unavailable.")
 
 
 # ─── Athena ───────────────────────────────────────────────────────────────────
@@ -282,16 +307,16 @@ def setup_auto_scaling() -> None:
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
-def main(dry: bool = False) -> None:
+def main(dry: bool = False, skip_kinesis: bool = False) -> None:
     global DRY
     DRY = dry
     print(f"\n{'[DRY RUN] ' if dry else ''}CloudPulse AWS Setup — region={AWS_REGION}")
     print("=" * 54)
 
     setup_s3()
-    setup_kinesis()
+    kinesis_enabled = False if skip_kinesis else setup_kinesis()
     setup_dynamodb()
-    setup_lambda()
+    setup_lambda(kinesis_enabled=kinesis_enabled)
     setup_athena()
     setup_auto_scaling()
 
@@ -306,5 +331,6 @@ def main(dry: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-kinesis", action="store_true")
     args = parser.parse_args()
-    main(dry=args.dry_run)
+    main(dry=args.dry_run, skip_kinesis=args.skip_kinesis)
