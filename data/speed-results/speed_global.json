@@ -1,0 +1,9 @@
+{
+  "computed_at": "2026-07-29T04:25:28.916420+00:00",
+  "global_health_score": 93.9,
+  "global_avg_latency": 85.6,
+  "global_avg_loss": 2.44,
+  "active_outages": 1,
+  "regions_monitored": 39,
+  "layer": "speed"
+}

@@ -1,0 +1,13 @@
+{
+  "merged_at": "2026-07-29T04:26:17.009371+00:00",
+  "global_health_score": 93.9,
+  "global_avg_latency": 85.6,
+  "global_avg_loss": 2.44,
+  "active_outages": 1,
+  "regions_monitored": 39,
+  "total_records_batch": 0,
+  "total_outage_events": 0,
+  "batch_health": 93.9,
+  "speed_health": 93.9,
+  "layer": "merged"
+}

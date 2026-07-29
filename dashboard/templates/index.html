@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1118" />
+  <title>CloudPulse | Global Internet Outage Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+  <div class="brand"><span class="brand-mark"><i></i><i></i><i></i></span><span>CloudPulse</span><small>GLOBAL INTERNET OUTAGE INTELLIGENCE</small></div>
+  <div class="workspace-switcher"><span class="status-dot"></span>Worldwide Internet Health <span class="chevron">⌄</span></div>
+  <div class="topbar-actions"><button class="icon-button" id="themeStatus" aria-label="System status"><span class="status-dot"></span><span>All systems operational</span></button><button class="icon-button" id="refreshBtn" aria-label="Refresh data">↻</button><div class="bell-wrap"><button class="icon-button bell-button" id="alertBellBtn" aria-label="Notifications" aria-expanded="false"><svg class="bell-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2.5c-3.5 0-6 2.7-6 6.2v3.1c0 .8-.3 1.6-.9 2.2l-.9.9c-.6.6-.2 1.6.6 1.6h14.4c.8 0 1.2-1 .6-1.6l-.9-.9c-.6-.6-.9-1.4-.9-2.2V8.7c0-3.5-2.5-6.2-6-6.2Z" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.5 19.5a2.5 2.5 0 0 0 5 0" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round"/></svg><span class="bell-badge is-hidden" id="bellBadge">0</span></button><div class="bell-dropdown" id="bellDropdown" aria-hidden="true"><div class="bell-dropdown-header"><strong>Notifications</strong><button class="text-button" id="bellClearAll">Clear all</button></div><div class="bell-dropdown-list" id="bellAlertList"></div></div></div><div class="avatar">DP</div></div>
+    </header>
+
+    <aside class="sidebar" aria-label="Primary navigation">
+      <nav>
+  <a class="nav-item active" href="#overview"><span>◈</span>Overview</a>
+  <a class="nav-item" href="#incidents"><span>⌁</span>Incidents <b id="navIncidentCount">0</b></a>
+  <a class="nav-item" href="#architecture" id="pipelineNav"><span>◇</span>Detection Pipeline</a>
+        <a class="nav-item" href="#analytics"><span>▥</span>Analytics</a>
+        <a class="nav-item" href="#alerts"><span>♢</span>Alert rules</a>
+      </nav>
+      <div class="sidebar-bottom"><div class="sidebar-caption">DETECTION PIPELINE</div><div class="data-state"><span class="status-dot"></span><div><strong>Live outage feed</strong><small>Lambda architecture</small></div></div><button class="collapse-button" aria-label="Collapse navigation">‹</button></div>
+    </aside>
+
+    <main class="dashboard" id="overview">
+  <section class="page-heading"><div><p class="eyebrow">GLOBAL INTERNET TELEMETRY / <span id="clockDisplay">--:--:--</span></p><h1>Good morning<span class="heading-accent">.</span></h1><p class="heading-sub">Real-time detection of outages, latency spikes, and routing anomalies worldwide.</p></div><div class="heading-actions"><button class="outline-button" id="rangeButton">Last 60 minutes <span>⌄</span></button><button class="primary-button" id="shareButton">⇧ Share view</button></div></section>
+
+  <section class="metric-grid" id="metricGrid" aria-label="Key metrics"></section>
+      <section class="workspace-grid">
+        <article class="panel globe-panel panel-wide">
+          <div class="panel-heading"><div><p class="eyebrow">LIVE TOPOLOGY</p><h2>Global internet health map</h2></div><div class="panel-tools"><span class="live-label"><span class="pulse-dot"></span> Live</span><button class="icon-button small" id="globeReset" aria-label="Reset globe view">◎</button></div></div>
+          <div class="globe-stage" id="globe"><div class="globe-loading" id="globeLoading"><span class="loader"></span>Loading topology</div><div class="globe-overlay"><div class="overlay-stat"><span>REGIONS MONITORED</span><strong id="hkpiRegions">—</strong></div><div class="overlay-stat"><span>ACTIVE ROUTES</span><strong id="activeRoutes">—</strong></div></div><div class="globe-legend"><span><i class="legend-dot healthy"></i>Healthy</span><span><i class="legend-dot warning"></i>Degraded</span><span><i class="legend-dot critical"></i>Outage</span></div></div>
+        </article>
+        <article class="panel health-panel"><div class="panel-heading"><div><p class="eyebrow">SERVICE LEVEL</p><h2>Health score</h2></div><button class="icon-button small" aria-label="Health score details">⋮</button></div><div class="gauge-wrap"><div class="gauge" id="healthGauge"><div><strong id="globalHealthScore">—</strong><span>/ 100</span><small id="healthStatusText">Loading</small></div></div></div><div class="health-summary"><span><i class="legend-dot healthy"></i>Healthy regions</span><strong id="healthyRegions">—</strong></div><div class="health-summary"><span><i class="legend-dot critical"></i>Active incidents</span><strong id="activeIncidents">—</strong></div></article>
+      </section>
+
+      <section class="workspace-grid lower-grid">
+        <article class="panel feed-panel" id="analytics"><div class="panel-heading"><div><p class="eyebrow">STREAMING TELEMETRY</p><h2>Live event feed</h2></div><div class="feed-controls"><span class="feed-count" id="feedCount">0 events</span><button class="icon-button small" id="feedPauseBtn" aria-label="Pause event feed">Ⅱ</button></div></div><div class="feed-toolbar"><label class="search-field">⌕<input id="feedSearch" placeholder="Filter events..." /></label><button class="text-button" id="clearFeed">Clear</button></div><div class="feed-scroll" id="liveFeed"></div></article>
+        <article class="panel trend-panel"><div class="panel-heading"><div><p class="eyebrow">PERFORMANCE</p><h2>Health over time</h2></div><span class="trend-badge" id="trendBadge">+0.0%</span></div><div class="chart-wrap"><canvas id="healthChart"></canvas></div></article>
+        <article class="panel regions-panel"><div class="panel-heading"><div><p class="eyebrow">REGIONAL PERFORMANCE</p><h2>Most affected regions</h2></div><button class="text-button" id="viewAllRegions">View all →</button></div><div id="topAffectedList" class="region-list"></div></article>
+      </section>
+
+      <section class="workspace-grid insight-grid">
+        <article class="panel health-detail-panel"><div class="panel-heading"><div><p class="eyebrow">SLO OVERVIEW</p><h2>Service health</h2></div><span class="panel-period">Rolling 24h</span></div><div class="health-detail-grid" id="healthGrid"></div></article>
+        <article class="panel incident-panel" id="incidents"><div class="panel-heading"><div><p class="eyebrow">RESPONSE HISTORY</p><h2>Incident timeline</h2></div><span class="panel-period">Last 24 hours</span></div><div class="timeline-scroll"><div class="incident-track" id="incidentTimeline"></div></div></article>
+        <article class="panel alert-panel" id="alerts"><div class="panel-heading"><div><p class="eyebrow">ATTENTION REQUIRED</p><h2>Alert queue</h2></div><span class="alert-count" id="alertCount">0</span></div><div class="alerts-list" id="alertList"></div></article>
+      </section>
+
+      <section class="panel playback-panel"><div><p class="eyebrow">HISTORICAL PLAYBACK</p><h2>Replay a moment in time</h2></div><div class="playback-controls"><button class="play-button" id="playbackButton" aria-label="Play historical data">▶</button><button class="icon-button small" id="replayButton" aria-label="Replay historical data">↺</button><label class="speed-select">Speed <select id="playbackSpeed"><option value="1">1x</option><option value="2">2x</option><option value="5">5x</option></select></label><input type="range" id="playbackSlider" min="0" max="100" value="100" aria-label="Historical playback position" /><span class="playback-time" id="playbackTime">LIVE</span></div></section>
+
+      <section class="panel architecture-panel-bottom is-hidden" id="architecture"><div class="panel-heading"><div><p class="eyebrow">DETECTION PIPELINE</p><h2>Lambda architecture flow</h2></div><span class="pipeline-status"><span class="status-dot"></span>Processing normally</span></div><div class="architecture-flow" id="architectureList"></div><div class="architecture-detail" id="architectureDetail"><span>Select a pipeline stage for details</span></div></section>
+
+      <footer class="footer"><span>CloudPulse · Global Internet Outage Intelligence · Lambda architecture</span><span>Last merge: <strong id="lastMerge">—</strong></span><span class="footer-links">Status · Docs · Support</span></footer>
+    </main>
+  </div>
+  <aside class="region-drawer" id="regionDrawer" aria-hidden="true"><button class="drawer-close" id="drawerClose" aria-label="Close region details">×</button><p class="eyebrow">REGION TELEMETRY</p><h2 id="drawerRegion">Select a region</h2><p class="drawer-country" id="drawerCountry">Click an active point on the globe</p><div class="drawer-score"><span>Health score</span><strong id="drawerHealth">—</strong></div><div class="drawer-stats"><div><span>Latency</span><strong id="drawerLatency">—</strong></div><div><span>Packet loss</span><strong id="drawerLoss">—</strong></div><div><span>Active alerts</span><strong id="drawerAlerts">—</strong></div><div><span>ISP / Provider</span><strong id="drawerProvider">—</strong></div></div><div class="drawer-route"><p class="eyebrow">ROUTE ACTIVITY</p><div class="route-line"><i></i><span id="drawerStatus">Awaiting telemetry</span></div></div><div class="drawer-extra" id="drawerExtra"></div></aside>
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
