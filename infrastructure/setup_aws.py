@@ -24,6 +24,7 @@ from config import (
     AWS_REGION, ATHENA_DATABASE, ATHENA_OUTPUT_LOCATION, ATHENA_WORKGROUP,
     DYNAMODB_TABLE, DYNAMODB_TTL,
     KINESIS_SHARD_COUNT, KINESIS_STREAM_NAME,
+    SQS_QUEUE_NAME, STREAM_BACKEND,
     S3_BUCKET,
     EMR_CLUSTER_NAME,
 )
@@ -159,6 +160,31 @@ def setup_kinesis() -> bool:
         raise
 
 
+# ─── SQS (fallback stream) ───────────────────────────────────────────────────
+def setup_sqs() -> tuple[str | None, str | None]:
+    print("\n── SQS (Fallback) ───────────────────────────────")
+    sqs = boto3.client("sqs", region_name=AWS_REGION)
+
+    if DRY:
+        _dry(f"SQS queue: {SQS_QUEUE_NAME}")
+        return None, None
+
+    attrs = {
+        "VisibilityTimeout": "120",
+        "MessageRetentionPeriod": "345600",
+        "ReceiveMessageWaitTimeSeconds": "20",
+    }
+
+    sqs.create_queue(QueueName=SQS_QUEUE_NAME, Attributes=attrs)
+    queue_url = sqs.get_queue_url(QueueName=SQS_QUEUE_NAME)["QueueUrl"]
+    queue_arn = sqs.get_queue_attributes(
+        QueueUrl=queue_url,
+        AttributeNames=["QueueArn"],
+    )["Attributes"]["QueueArn"]
+    _info(f"SQS queue ready: {SQS_QUEUE_NAME}")
+    return queue_url, queue_arn
+
+
 # ─── DynamoDB ─────────────────────────────────────────────────────────────────
 def setup_dynamodb() -> None:
     print("\n── DynamoDB ──────────────────────────────────────")
@@ -190,7 +216,11 @@ def setup_dynamodb() -> None:
 
 
 # ─── Lambda ───────────────────────────────────────────────────────────────────
-def setup_lambda(kinesis_enabled: bool = True) -> None:
+def setup_lambda(
+    stream_backend: str = "kinesis",
+    kinesis_enabled: bool = True,
+    sqs_queue_arn: str | None = None,
+) -> None:
     print("\n── Lambda ────────────────────────────────────────")
     lmb = boto3.client("lambda", region_name=AWS_REGION)
     iam = boto3.client("iam",    region_name=AWS_REGION)
@@ -217,14 +247,33 @@ def setup_lambda(kinesis_enabled: bool = True) -> None:
     env_vars = {
         "S3_BUCKET":              S3_BUCKET,
         "DYNAMODB_TABLE":         DYNAMODB_TABLE,
-        "AWS_REGION":             AWS_REGION,
+        "APP_AWS_REGION":         AWS_REGION,
         "SPEED_WINDOW_SECONDS":   "300",
+        "STREAM_BACKEND":         stream_backend,
     }
 
     fn_name = "cloudpulse-speed-processor"
+    created = False
+
+    def _is_conflict(exc: ClientError) -> bool:
+        return exc.response.get("Error", {}).get("Code") == "ResourceConflictException"
+
+    def _retry_update() -> None:
+        attempts = 8
+        for i in range(attempts):
+            try:
+                lmb.update_function_code(FunctionName=fn_name, ZipFile=buf.getvalue())
+                lmb.get_waiter("function_updated").wait(FunctionName=fn_name)
+                lmb.update_function_configuration(FunctionName=fn_name, Environment={"Variables": env_vars})
+                lmb.get_waiter("function_updated").wait(FunctionName=fn_name)
+                return
+            except ClientError as exc:
+                if not _is_conflict(exc) or i == attempts - 1:
+                    raise
+                time.sleep(5)
+
     try:
-        lmb.update_function_code(FunctionName=fn_name, ZipFile=buf.getvalue())
-        lmb.update_function_configuration(FunctionName=fn_name, Environment={"Variables": env_vars})
+        _retry_update()
         _info(f"Updated Lambda function: {fn_name}")
     except lmb.exceptions.ResourceNotFoundException:
         lmb.create_function(
@@ -236,15 +285,24 @@ def setup_lambda(kinesis_enabled: bool = True) -> None:
             Timeout=60,
             MemorySize=256,
             Environment={"Variables": env_vars},
-            Description="CloudPulse speed-layer — triggered by Kinesis",
+            Description="CloudPulse speed-layer processor",
         )
         _info(f"Created Lambda function: {fn_name}")
+        created = True
 
-        if kinesis_enabled:
-            # Add Kinesis trigger
-            stream_arn = boto3.client("kinesis", region_name=AWS_REGION) \
-                .describe_stream_summary(StreamName=KINESIS_STREAM_NAME) \
-                ["StreamDescriptionSummary"]["StreamARN"]
+    # Wait briefly for configuration propagation before mapping changes.
+    if created:
+        time.sleep(5)
+
+    if stream_backend == "kinesis" and kinesis_enabled:
+        stream_arn = boto3.client("kinesis", region_name=AWS_REGION) \
+            .describe_stream_summary(StreamName=KINESIS_STREAM_NAME) \
+            ["StreamDescriptionSummary"]["StreamARN"]
+        mappings = lmb.list_event_source_mappings(FunctionName=fn_name)["EventSourceMappings"]
+        has_mapping = any(m.get("EventSourceArn") == stream_arn for m in mappings)
+        if has_mapping:
+            _skip("Lambda Kinesis trigger")
+        else:
             lmb.create_event_source_mapping(
                 EventSourceArn=stream_arn,
                 FunctionName=fn_name,
@@ -253,8 +311,22 @@ def setup_lambda(kinesis_enabled: bool = True) -> None:
                 BisectBatchOnFunctionError=True,
             )
             _info("Added Kinesis trigger to Lambda (batch=100)")
+    elif stream_backend == "sqs" and sqs_queue_arn:
+        mappings = lmb.list_event_source_mappings(FunctionName=fn_name)["EventSourceMappings"]
+        has_mapping = any(m.get("EventSourceArn") == sqs_queue_arn for m in mappings)
+        if has_mapping:
+            _skip("Lambda SQS trigger")
         else:
-            _warn("Skipped Lambda Kinesis trigger because Kinesis is unavailable.")
+            lmb.create_event_source_mapping(
+                EventSourceArn=sqs_queue_arn,
+                FunctionName=fn_name,
+                BatchSize=10,
+                MaximumBatchingWindowInSeconds=5,
+                Enabled=True,
+            )
+            _info("Added SQS trigger to Lambda (batch=10)")
+    else:
+        _warn("Skipped Lambda trigger setup (no supported stream backend available).")
 
 
 # ─── Athena ───────────────────────────────────────────────────────────────────
@@ -307,16 +379,44 @@ def setup_auto_scaling() -> None:
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
-def main(dry: bool = False, skip_kinesis: bool = False) -> None:
+def main(dry: bool = False, skip_kinesis: bool = False, stream_backend: str = STREAM_BACKEND) -> None:
     global DRY
     DRY = dry
     print(f"\n{'[DRY RUN] ' if dry else ''}CloudPulse AWS Setup — region={AWS_REGION}")
     print("=" * 54)
 
     setup_s3()
-    kinesis_enabled = False if skip_kinesis else setup_kinesis()
+
+    selected_backend = stream_backend
+    kinesis_enabled = False
+    sqs_queue_url: str | None = None
+    sqs_queue_arn: str | None = None
+
+    if selected_backend not in ("auto", "kinesis", "sqs"):
+        raise ValueError("STREAM_BACKEND must be one of: auto, kinesis, sqs")
+
+    if selected_backend in ("auto", "kinesis"):
+        kinesis_enabled = False if skip_kinesis else setup_kinesis()
+        if selected_backend == "kinesis" and not kinesis_enabled:
+            raise RuntimeError("Kinesis backend requested but Kinesis is unavailable for this account.")
+
+    if selected_backend == "auto":
+        if kinesis_enabled:
+            selected_backend = "kinesis"
+        else:
+            selected_backend = "sqs"
+            sqs_queue_url, sqs_queue_arn = setup_sqs()
+            if sqs_queue_url:
+                _info(f"Using streaming backend: {selected_backend}")
+    elif selected_backend == "sqs":
+        sqs_queue_url, sqs_queue_arn = setup_sqs()
+
     setup_dynamodb()
-    setup_lambda(kinesis_enabled=kinesis_enabled)
+    setup_lambda(
+        stream_backend=selected_backend,
+        kinesis_enabled=kinesis_enabled,
+        sqs_queue_arn=sqs_queue_arn,
+    )
     setup_athena()
     setup_auto_scaling()
 
@@ -326,11 +426,14 @@ def main(dry: bool = False, skip_kinesis: bool = False) -> None:
     print("  2. python ingestion/producer.py            — start data ingestion")
     print("  3. python dashboard/app.py                 — open dashboard")
     print("  4. python batch_layer/submit_batch.py --create --spark --wait")
+    if selected_backend == "sqs" and sqs_queue_url:
+        print(f"  5. SQS fallback queue URL: {sqs_queue_url}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-kinesis", action="store_true")
+    parser.add_argument("--stream-backend", choices=["auto", "kinesis", "sqs"], default=STREAM_BACKEND)
     args = parser.parse_args()
-    main(dry=args.dry_run, skip_kinesis=args.skip_kinesis)
+    main(dry=args.dry_run, skip_kinesis=args.skip_kinesis, stream_backend=args.stream_backend)

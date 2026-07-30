@@ -164,6 +164,23 @@ chmod +x infrastructure/deploy_eu.sh
 ./infrastructure/deploy_eu.sh https://github.com/<your-user>/<your-repo>.git main
 ```
 
+### Temporary fallback when Kinesis is unavailable
+
+If your AWS account returns `SubscriptionRequiredException` for Kinesis,
+CloudPulse now falls back to SQS automatically when `STREAM_BACKEND=auto`
+(default).
+
+```bash
+# Optional: force SQS fallback explicitly
+export STREAM_BACKEND=sqs
+
+# Run setup (creates SQS queue + Lambda SQS trigger)
+python infrastructure/setup_aws.py --stream-backend sqs
+
+# Start ingestion (producer publishes to SQS in production mode)
+DEMO_MODE=false STREAM_BACKEND=sqs python ingestion/producer.py
+```
+
 ## Push To GitHub
 
 ```bash

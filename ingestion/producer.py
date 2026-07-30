@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import (
     AWS_REGION, DEMO_MODE, INGESTION_RATE,
     KINESIS_STREAM_NAME, LOCAL_DATA_DIR, PROBE_COUNT,
+    SQS_QUEUE_NAME, STREAM_BACKEND,
     USE_RIPE_ATLAS,
 )
 from ingestion.data_sources import REGIONS, simulate_stream, fetch_ripe_atlas_measurements
@@ -64,6 +65,10 @@ def write_local(record: dict, base: Path) -> None:
 # ─── Production: Kinesis ───────────────────────────────────────────────────────
 def _get_kinesis_client():
     return boto3.client("kinesis", region_name=AWS_REGION)
+
+
+def _get_sqs_client():
+    return boto3.client("sqs", region_name=AWS_REGION)
 
 
 def _create_stream_if_missing(client, stream_name: str, shard_count: int = 2) -> None:
@@ -119,6 +124,50 @@ def put_records_batch_kinesis(client, records: list[dict], stream_name: str) -> 
         return 0
 
 
+def _get_or_create_sqs_queue_url(client, queue_name: str) -> str:
+    attrs = {
+        "VisibilityTimeout": "120",
+        "MessageRetentionPeriod": "345600",
+        "ReceiveMessageWaitTimeSeconds": "20",
+    }
+    client.create_queue(QueueName=queue_name, Attributes=attrs)
+    return client.get_queue_url(QueueName=queue_name)["QueueUrl"]
+
+
+def put_records_batch_sqs(client, records: list[dict], queue_url: str) -> int:
+    """Put up to 10 records in one SQS SendMessageBatch call."""
+    sent = 0
+    for i in range(0, len(records), 10):
+        chunk = records[i:i + 10]
+        entries = [
+            {
+                "Id": str(idx),
+                "MessageBody": json.dumps(r),
+            }
+            for idx, r in enumerate(chunk)
+        ]
+        try:
+            resp = client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+            ok = len(resp.get("Successful", []))
+            err = len(resp.get("Failed", []))
+            sent += ok
+            _record_metric("sqs_puts_ok", ok)
+            _record_metric("sqs_puts_err", err)
+        except ClientError as exc:
+            log.error("SQS send_message_batch failed: %s", exc)
+            _record_metric("sqs_puts_err", len(chunk))
+    return sent
+
+
+def _resolve_stream_backend() -> str:
+    backend = STREAM_BACKEND
+    if backend == "sqs":
+        return "sqs"
+    if backend == "kinesis":
+        return "kinesis"
+    return "auto"
+
+
 # ─── Main producer loop ────────────────────────────────────────────────────────
 def run_producer(
     rate: float = INGESTION_RATE,
@@ -133,15 +182,34 @@ def run_producer(
     log.info("Starting producer — mode=%s  rate=%.1f rec/s", "DEMO" if demo else "PROD", rate)
 
     kinesis_client = None
+    sqs_client = None
+    sqs_queue_url: str | None = None
+    selected_backend = "demo"
     local_base: Path | None = None
 
     if demo:
         local_base = _ensure_local_dirs()
         log.info("Demo mode: records → %s/raw/", LOCAL_DATA_DIR)
     else:
-        kinesis_client = _get_kinesis_client()
-        _create_stream_if_missing(kinesis_client, KINESIS_STREAM_NAME)
-        log.info("Production mode: records → Kinesis stream '%s'", KINESIS_STREAM_NAME)
+        backend = _resolve_stream_backend()
+        if backend in ("auto", "kinesis"):
+            try:
+                kinesis_client = _get_kinesis_client()
+                _create_stream_if_missing(kinesis_client, KINESIS_STREAM_NAME)
+                selected_backend = "kinesis"
+                log.info("Production mode: records → Kinesis stream '%s'", KINESIS_STREAM_NAME)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code == "SubscriptionRequiredException" and backend == "auto":
+                    log.warning("Kinesis unavailable for this account, switching to SQS fallback.")
+                else:
+                    raise
+
+        if selected_backend != "kinesis":
+            sqs_client = _get_sqs_client()
+            sqs_queue_url = _get_or_create_sqs_queue_url(sqs_client, SQS_QUEUE_NAME)
+            selected_backend = "sqs"
+            log.info("Production mode: records → SQS queue '%s'", SQS_QUEUE_NAME)
 
     interval    = 1.0 / max(rate, 0.1)
     batch_buf   = []
@@ -163,7 +231,10 @@ def run_producer(
             else:
                 batch_buf.append(record)
                 if len(batch_buf) >= batch_size:
-                    put_records_batch_kinesis(kinesis_client, batch_buf, KINESIS_STREAM_NAME)
+                    if selected_backend == "kinesis":
+                        put_records_batch_kinesis(kinesis_client, batch_buf, KINESIS_STREAM_NAME)
+                    else:
+                        put_records_batch_sqs(sqs_client, batch_buf, sqs_queue_url)
                     batch_buf.clear()
 
             total_sent += 1

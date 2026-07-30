@@ -1,7 +1,7 @@
 """
 CloudPulse — AWS Lambda Function (Speed Layer)
-Triggered by Kinesis Data Streams.  Each invocation receives a batch of
-Kinesis records, decodes them, computes per-record metrics, and:
+Triggered by Kinesis Data Streams or SQS fallback queue. Each invocation
+receives a batch of records, decodes them, computes per-record metrics, and:
   1. Updates a DynamoDB item (one per region) with the latest state + TTL.
   2. Puts a CloudWatch metric for the health score and packet loss.
   3. Writes windowed aggregates to S3 every SLIDE_INTERVAL invocations.
@@ -11,7 +11,7 @@ Deploy this file as a Lambda function:
     Runtime:  python3.12
     Timeout:  60 s
     Memory:   256 MB
-    Trigger:  Kinesis Data Stream (cloudpulse-stream), batch size 100
+    Trigger:  Kinesis Data Stream (cloudpulse-stream) or SQS queue fallback
 
 Required environment variables (set in Lambda console or via Terraform):
     S3_BUCKET           cloudpulse-data-bucket
@@ -39,7 +39,7 @@ log.setLevel(logging.INFO)
 # ─── Environment ──────────────────────────────────────────────────────────────
 S3_BUCKET          = os.environ.get("S3_BUCKET",           "cloudpulse-data-bucket")
 DYNAMODB_TABLE     = os.environ.get("DYNAMODB_TABLE",      "cloudpulse-speed-layer")
-AWS_REGION         = os.environ.get("AWS_REGION",          "us-east-1")
+AWS_REGION         = os.environ.get("APP_AWS_REGION", os.environ.get("AWS_REGION", "us-east-1"))
 S3_SPEED_PREFIX    = os.environ.get("S3_SPEED_PREFIX",     "speed-results/")
 CW_NAMESPACE       = os.environ.get("CW_NAMESPACE",        "CloudPulse")
 SPEED_WINDOW_SECS  = int(os.environ.get("SPEED_WINDOW_SECONDS", "300"))
@@ -79,6 +79,23 @@ def _decode_kinesis_record(kinesis_record: dict) -> dict | None:
     except Exception as exc:
         log.warning("Failed to decode Kinesis record: %s", exc)
         return None
+
+
+def _decode_sqs_record(sqs_record: dict) -> dict | None:
+    try:
+        return json.loads(sqs_record["body"])
+    except Exception as exc:
+        log.warning("Failed to decode SQS record: %s", exc)
+        return None
+
+
+def _decode_event_record(record: dict) -> dict | None:
+    if "kinesis" in record:
+        return _decode_kinesis_record(record)
+    if record.get("eventSource") == "aws:sqs" and "body" in record:
+        return _decode_sqs_record(record)
+    log.warning("Unsupported event record format: keys=%s", list(record.keys()))
+    return None
 
 
 # ─── DynamoDB upsert ──────────────────────────────────────────────────────────
@@ -214,16 +231,16 @@ def _write_aggs_to_s3(aggs: dict) -> None:
 # ─── Lambda handler ────────────────────────────────────────────────────────────
 def lambda_handler(event: dict, context) -> dict:
     """
-    Entry point invoked by Kinesis trigger.
-    `event['Records']` contains up to <batch_size> Kinesis records.
+    Entry point invoked by stream trigger.
+    `event['Records']` may be Kinesis or SQS records.
     """
     t_start = time.perf_counter()
     raw_records = event.get("Records", [])
 
     # Decode
     probe_records = []
-    for kr in raw_records:
-        decoded = _decode_kinesis_record(kr)
+    for record in raw_records:
+        decoded = _decode_event_record(record)
         if decoded:
             probe_records.append(decoded)
 

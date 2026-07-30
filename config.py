@@ -16,6 +16,14 @@ AWS_PROFILE         = os.environ.get("AWS_PROFILE", "default")
 KINESIS_STREAM_NAME = os.environ.get("KINESIS_STREAM_NAME", "cloudpulse-stream")
 KINESIS_SHARD_COUNT = int(os.environ.get("KINESIS_SHARD_COUNT", "2"))
 
+# ─── Streaming backend fallback ───────────────────────────────────────────────
+# STREAM_BACKEND values:
+#   auto    -> use Kinesis if available, otherwise SQS fallback
+#   kinesis -> force Kinesis only
+#   sqs     -> force SQS only
+STREAM_BACKEND      = os.environ.get("STREAM_BACKEND", "auto").lower()
+SQS_QUEUE_NAME      = os.environ.get("SQS_QUEUE_NAME", "cloudpulse-stream-queue")
+
 # ─── S3 ───────────────────────────────────────────────────────────────────────
 S3_BUCKET           = os.environ.get("S3_BUCKET", "cloudpulse-data-bucket")
 S3_RAW_PREFIX       = "raw/"
