@@ -28,14 +28,77 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import (
     ASG_COOLDOWN, ASG_DESIRED_CAPACITY, ASG_MAX_SIZE,
     ASG_MIN_SIZE, ASG_NAME, ASG_SCALE_IN_CPU, ASG_SCALE_OUT_CPU,
-    AWS_REGION, CLOUDWATCH_NAMESPACE,
+    AWS_REGION, CLOUDWATCH_NAMESPACE, DASHBOARD_HOST, DASHBOARD_PORT,
+    DEMO_MODE, S3_BUCKET, STREAM_BACKEND, USE_REAL_STREAM,
 )
 
 asg = boto3.client("autoscaling",  region_name=AWS_REGION)
 ec2 = boto3.client("ec2",          region_name=AWS_REGION)
 cw  = boto3.client("cloudwatch",   region_name=AWS_REGION)
+
+
+def get_or_create_dashboard_security_group() -> str:
+    sg_name = "cloudpulse-dashboard-sg"
+    vpc_resp = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
+    if not vpc_resp["Vpcs"]:
+        raise RuntimeError("No default VPC found; cannot create dashboard security group.")
+    vpc_id = vpc_resp["Vpcs"][0]["VpcId"]
+
+    try:
+        resp = ec2.describe_security_groups(Filters=[{"Name": "group-name", "Values": [sg_name]}])
+        if resp["SecurityGroups"]:
+            sg_id = resp["SecurityGroups"][0]["GroupId"]
+        else:
+            raise ec2.exceptions.ClientError({}, "DescribeSecurityGroups")
+    except Exception:
+        created = ec2.create_security_group(
+            GroupName=sg_name,
+            Description="CloudPulse dashboard public access",
+            VpcId=vpc_id,
+        )
+        sg_id = created["GroupId"]
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp",
+                    "FromPort": int(DASHBOARD_PORT),
+                    "ToPort": int(DASHBOARD_PORT),
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Public dashboard access"}],
+                }],
+            )
+        except Exception:
+            pass
+        try:
+            ec2.authorize_security_group_egress(
+                GroupId=sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "-1",
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                    "Ipv6Ranges": [{"CidrIpv6": "::/0"}],
+                }],
+            )
+        except Exception:
+            pass
+        print(f"  Created security group: {sg_name} ({sg_id})")
+        return sg_id
+
+    try:
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[{
+                "IpProtocol": "tcp",
+                "FromPort": int(DASHBOARD_PORT),
+                "ToPort": int(DASHBOARD_PORT),
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Public dashboard access"}],
+            }],
+        )
+    except Exception:
+        pass
+    print(f"  Using security group: {sg_name} ({sg_id})")
+    return sg_id
 # ─── Launch template ──────────────────────────────────────────────────────────
-def _build_userdata_b64(repo_url: str, repo_branch: str) -> str:
+def _build_userdata_b64(repo_url: str, repo_branch: str, sg_id: str) -> str:
     import base64
 
     script = f"""#!/bin/bash
@@ -52,9 +115,28 @@ pip3 install -r requirements.txt
 cat > /opt/cloudpulse/.env << 'ENV'
 DEMO_MODE=false
 AWS_REGION={AWS_REGION}
-KINESIS_STREAM_NAME=cloudpulse-stream
-S3_BUCKET=cloudpulse-data-bucket
+S3_BUCKET={S3_BUCKET}
+STREAM_BACKEND={STREAM_BACKEND}
+USE_REAL_STREAM={'true' if USE_REAL_STREAM else 'false'}
+DASHBOARD_HOST={DASHBOARD_HOST}
+DASHBOARD_PORT={DASHBOARD_PORT}
 ENV
+
+cat > /etc/systemd/system/cloudpulse-dashboard.service << 'SVC'
+[Unit]
+Description=CloudPulse Dashboard
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/cloudpulse
+EnvironmentFile=/opt/cloudpulse/.env
+ExecStart=/usr/bin/python3 dashboard/app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SVC
 
 # Start speed-layer processor as a service
 cat > /etc/systemd/system/cloudpulse-speed.service << 'SVC'
@@ -63,6 +145,7 @@ Description=CloudPulse Speed Layer
 After=network.target
 [Service]
 WorkingDirectory=/opt/cloudpulse
+EnvironmentFile=/opt/cloudpulse/.env
 ExecStart=/usr/bin/python3 speed_layer/stream_processor.py
 Restart=always
 RestartSec=10
@@ -71,6 +154,7 @@ WantedBy=multi-user.target
 SVC
 
 systemctl daemon-reload
+systemctl enable --now cloudpulse-dashboard
 systemctl enable --now cloudpulse-speed
 """
     return base64.b64encode(script.encode()).decode()
@@ -80,7 +164,8 @@ def get_or_create_launch_template(repo_url: str, repo_branch: str) -> str:
     """Return existing launch template ID or create a new one."""
     lt_name = "cloudpulse-launch-template"
 
-    userdata_b64 = _build_userdata_b64(repo_url=repo_url, repo_branch=repo_branch)
+    sg_id = get_or_create_dashboard_security_group()
+    userdata_b64 = _build_userdata_b64(repo_url=repo_url, repo_branch=repo_branch, sg_id=sg_id)
 
     try:
         resp = ec2.describe_launch_templates(
@@ -92,7 +177,11 @@ def get_or_create_launch_template(repo_url: str, repo_branch: str) -> str:
                 LaunchTemplateId=lt_id,
                 SourceVersion="$Latest",
                 VersionDescription=f"CloudPulse bootstrap update ({repo_branch})",
-                LaunchTemplateData={"UserData": userdata_b64},
+                LaunchTemplateData={
+                    "InstanceType": "t3.micro",
+                    "UserData": userdata_b64,
+                    "SecurityGroupIds": [sg_id],
+                },
             )
             print(f"  Using existing launch template: {lt_id}")
             print("  Created new launch template version with current repo bootstrap settings")
@@ -119,8 +208,9 @@ def get_or_create_launch_template(repo_url: str, repo_branch: str) -> str:
         VersionDescription="CloudPulse initial",
         LaunchTemplateData={
             "ImageId":      ami_id,
-            "InstanceType": "t3.medium",
+            "InstanceType": "t3.micro",
             "UserData":     userdata_b64,
+            "SecurityGroupIds": [sg_id],
             "IamInstanceProfile": {"Name": "cloudpulse-ec2-profile"},
             "Monitoring":   {"Enabled": True},
             "TagSpecifications": [{
@@ -175,8 +265,6 @@ def create_scaling_policies() -> None:
             "PredefinedMetricSpecification": {"PredefinedMetricType": "ASGAverageCPUUtilization"},
             "TargetValue":        60.0,
             "DisableScaleIn":     False,
-            "ScaleOutCooldown":   ASG_COOLDOWN,
-            "ScaleInCooldown":    ASG_COOLDOWN * 2,
         },
     )
     print(f"  Created target-tracking policy (CPU target=60 %)")

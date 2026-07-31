@@ -106,7 +106,7 @@ def _load_from_s3(key: str) -> object:
 
 
 def _fetch(local_rel: str, s3_key: str) -> object:
-    if DEMO_MODE:
+    if DEMO_MODE or USE_REAL_STREAM:
         return _load_json_file(local_rel)
     return _load_from_s3(s3_key)
 
@@ -430,8 +430,11 @@ def stream():
 # ─── Entry point ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     Path(LOCAL_DATA_DIR).mkdir(parents=True, exist_ok=True)
-    if DEMO_MODE:
-        log.info("Starting in DEMO mode (no AWS credentials required)")
+    if DEMO_MODE or USE_REAL_STREAM:
+        if USE_REAL_STREAM and not DEMO_MODE:
+            log.info("Starting in LIVE Wikimedia mode (no demo data)")
+        else:
+            log.info("Starting in DEMO mode (no AWS credentials required)")
         _start_demo_threads()
     else:
         log.info("Starting in PRODUCTION mode (reads from AWS)")

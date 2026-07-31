@@ -30,7 +30,7 @@ from config import (
     SQS_QUEUE_NAME, STREAM_BACKEND,
     USE_RIPE_ATLAS,
 )
-from ingestion.data_sources import REGIONS, simulate_stream, fetch_ripe_atlas_measurements
+from ingestion.data_sources import REGIONS, simulate_stream, stream_wikimedia, fetch_ripe_atlas_measurements
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +83,10 @@ def _create_stream_if_missing(client, stream_name: str, shard_count: int = 2) ->
         waiter = client.get_waiter("stream_exists")
         waiter.wait(StreamName=stream_name)
         log.info("Kinesis stream '%s' is now ACTIVE.", stream_name)
+
+
+def fetch_wikimedia_stream():
+    return stream_wikimedia()
 
 
 def put_record_kinesis(client, record: dict, stream_name: str) -> bool:
@@ -217,7 +221,15 @@ def run_producer(
     log_every   = 100  # log a summary every N records
     total_sent  = 0
 
-    stream_gen = simulate_stream(REGIONS, rate=rate)
+    if demo:
+        stream_gen = simulate_stream(REGIONS, rate=rate)
+        log.info("Demo source: simulated regional probe stream")
+    elif USE_REAL_STREAM:
+        stream_gen = fetch_wikimedia_stream()
+        log.info("Production source: Wikimedia live stream")
+    else:
+        stream_gen = simulate_stream(REGIONS, rate=rate)
+        log.info("Production source: simulated regional probe stream")
 
     while True:
         try:

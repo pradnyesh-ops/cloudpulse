@@ -133,6 +133,8 @@ The demo mode:
 cp .env.example .env
 # Edit .env and ensure:
 #   DEMO_MODE=false
+#   USE_REAL_STREAM=true
+#   STREAM_BACKEND=sqs
 #   AWS_REGION=eu-west-1
 #   S3_BUCKET=<your-globally-unique-bucket>
 
@@ -151,6 +153,8 @@ python batch_layer/submit_batch.py --create --spark --wait
 
 # 5. Run the dashboard (reads from S3)
 DEMO_MODE=false python dashboard/app.py
+
+# 5a. On EC2, open the dashboard at: http://<EC2_PUBLIC_IP>:5000
 
 # 6. Set up Athena for ad-hoc SQL queries
 python serving_layer/athena_queries.py --setup
@@ -174,11 +178,14 @@ CloudPulse now falls back to SQS automatically when `STREAM_BACKEND=auto`
 # Optional: force SQS fallback explicitly
 export STREAM_BACKEND=sqs
 
+# Use the Wikimedia live stream instead of demo data
+export USE_REAL_STREAM=true
+
 # Run setup (creates SQS queue + Lambda SQS trigger)
 python infrastructure/setup_aws.py --stream-backend sqs
 
 # Start ingestion (producer publishes to SQS in production mode)
-DEMO_MODE=false STREAM_BACKEND=sqs python ingestion/producer.py
+DEMO_MODE=false USE_REAL_STREAM=true STREAM_BACKEND=sqs python ingestion/producer.py
 ```
 
 ## Push To GitHub
