@@ -109,7 +109,13 @@ yum install -y python3 python3-pip git
 # Clone and set up CloudPulse
 git clone --branch {repo_branch} {repo_url} /opt/cloudpulse
 cd /opt/cloudpulse
-pip3 install -r requirements.txt
+python3 -m venv /opt/cloudpulse/.venv
+/opt/cloudpulse/.venv/bin/pip install --upgrade pip
+/opt/cloudpulse/.venv/bin/pip install \
+    boto3==1.34.144 botocore==1.34.144 \
+    flask==3.0.3 flask-cors==4.0.1 gevent==24.2.1 \
+    requests==2.32.3 sseclient-py==1.8.0 \
+    python-dateutil==2.9.0 pytz==2024.1 python-dotenv==1.0.1
 
 # Write environment
 cat > /opt/cloudpulse/.env << 'ENV'
@@ -130,7 +136,7 @@ After=network.target
 [Service]
 WorkingDirectory=/opt/cloudpulse
 EnvironmentFile=/opt/cloudpulse/.env
-ExecStart=/usr/bin/python3 dashboard/app.py
+ExecStart=/opt/cloudpulse/.venv/bin/python dashboard/app.py
 Restart=always
 RestartSec=10
 
@@ -146,7 +152,7 @@ After=network.target
 [Service]
 WorkingDirectory=/opt/cloudpulse
 EnvironmentFile=/opt/cloudpulse/.env
-ExecStart=/usr/bin/python3 speed_layer/stream_processor.py
+ExecStart=/opt/cloudpulse/.venv/bin/python speed_layer/stream_processor.py
 Restart=always
 RestartSec=10
 [Install]
