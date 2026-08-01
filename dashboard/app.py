@@ -181,17 +181,17 @@ def _start_demo_threads() -> None:
             for record in stream_wikimedia():
                 try:
                     ingest_record(record)
-                    if record.get("outage_detected") or record.get("state") in ("warning", "critical"):
-                        _broadcast_sse("outage_event", {
-                            "region":  record["region_name"],
-                            "country": record["country_name"],
-                            "flag":    record.get("flag", ""),
-                            "severity":record.get("state", "unknown"),
-                            "latency": record.get("avg_rtt_ms"),
-                            "loss":    record.get("packet_loss_pct"),
-                            "health":  record.get("health_score"),
-                            "ts":      record.get("timestamp"),
-                        })
+                    _broadcast_sse("outage_event", {
+                        "region":  record["region_name"],
+                        "country": record["country_name"],
+                        "flag":    record.get("flag", ""),
+                        "severity":record.get("state", "unknown"),
+                        "latency": record.get("avg_rtt_ms"),
+                        "loss":    record.get("packet_loss_pct"),
+                        "health":  record.get("health_score"),
+                        "event_type": "Wikimedia activity",
+                        "ts":      record.get("timestamp"),
+                    })
                 except Exception as exc:
                     log.error("Wikimedia producer error: %s", exc)
     else:

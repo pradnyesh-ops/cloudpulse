@@ -83,19 +83,19 @@ def _ingest_record(record: dict) -> None:
         _window[region_id].append((unix_ts, record))
         _shared_state["current_state"][region_id] = record
 
-        if record.get("outage_detected") or record.get("state") in ("warning", "critical"):
-            event = {
-                "ts":          record.get("timestamp"),
-                "region_id":   region_id,
-                "region_name": record.get("region_name"),
-                "country":     record.get("country_name"),
-                "flag":        record.get("flag", ""),
-                "severity":    record.get("state", "unknown"),
-                "latency_ms":  record.get("avg_rtt_ms"),
-                "packet_loss": record.get("packet_loss_pct"),
-                "health":      record.get("health_score"),
-            }
-            _shared_state["live_events"].appendleft(event)
+        event = {
+            "ts":          record.get("timestamp"),
+            "region_id":   region_id,
+            "region_name": record.get("region_name"),
+            "country":     record.get("country_name"),
+            "flag":        record.get("flag", ""),
+            "severity":    record.get("state", "unknown"),
+            "latency_ms":  record.get("avg_rtt_ms"),
+            "packet_loss": record.get("packet_loss_pct"),
+            "health":      record.get("health_score"),
+            "event_type":  "Wikimedia activity" if record.get("measurement_type") == "wikimedia-edit-proxy" else "Network telemetry",
+        }
+        _shared_state["live_events"].appendleft(event)
 
 
 # ─── Aggregate computation ────────────────────────────────────────────────────
