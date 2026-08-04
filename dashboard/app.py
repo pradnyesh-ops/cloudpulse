@@ -159,7 +159,7 @@ def _normalize_probe_records(current_state: dict) -> list[dict]:
     merged-region format that the dashboard JS expects."""
     result = []
     for r in current_state.values():
-        score = r.get("health_score", 100.0)
+        score = float(r.get("health_score", 100.0))
         result.append({
             "region_id":            r.get("region_id", ""),
             "region_name":          r.get("region_name", ""),
@@ -171,13 +171,13 @@ def _normalize_probe_records(current_state: dict) -> list[dict]:
             "flag":                 r.get("flag", ""),
             "provider":             r.get("provider", ""),
             "current_health_score": round(score, 1),
-            "current_latency_ms":   round(r.get("avg_rtt_ms",     50.0), 1),
-            "current_packet_loss":  round(r.get("packet_loss_pct", 0.0), 2),
+            "current_latency_ms":   round(float(r.get("avg_rtt_ms",     50.0)), 1),
+            "current_packet_loss":  round(float(r.get("packet_loss_pct", 0.0)), 2),
             "is_outage":            r.get("outage_detected", False),
             "state":                r.get("state", "healthy"),
             "status":               _status_from_score(score),
             "hist_health_score":    round(score, 1),
-            "hist_latency_ms":      round(r.get("avg_rtt_ms", 50.0), 1),
+            "hist_latency_ms":      round(float(r.get("avg_rtt_ms", 50.0)), 1),
             "impact_score":         round(100.0 - score, 2),
         })
     return sorted(result, key=lambda x: x["impact_score"], reverse=True)
@@ -189,9 +189,9 @@ def _global_from_state(current_state: dict) -> dict:
     if not records:
         return {}
     n       = len(records)
-    health  = round(sum(r.get("health_score",    100.0) for r in records) / n, 1)
-    latency = round(sum(r.get("avg_rtt_ms",      50.0)  for r in records) / n, 1)
-    loss    = round(sum(r.get("packet_loss_pct",  0.0)  for r in records) / n, 2)
+    health  = round(sum(float(r.get("health_score",    100.0)) for r in records) / n, 1)
+    latency = round(sum(float(r.get("avg_rtt_ms",      50.0)) for r in records) / n, 1)
+    loss    = round(sum(float(r.get("packet_loss_pct", 0.0)) for r in records) / n, 2)
     outages = sum(1 for r in records if r.get("outage_detected", False))
     return {
         "global_health_score": health,
