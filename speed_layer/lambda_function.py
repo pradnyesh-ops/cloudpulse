@@ -114,6 +114,8 @@ def _upsert_region_state(record: dict) -> None:
         "country_code":     {"S": record.get("country_code", "XX")},
         "country_name":     {"S": record.get("country_name", "Unknown")},
         "region_name":      {"S": record.get("region_name", region_id)},
+        "continent":        {"S": record.get("continent", "")},
+        "provider":         {"S": record.get("provider", "")},
         "avg_rtt_ms":       {"N": str(record.get("avg_rtt_ms", 0))},
         "packet_loss_pct":  {"N": str(record.get("packet_loss_pct", 0))},
         "health_score":     {"N": str(record.get("health_score", 100))},
@@ -202,7 +204,7 @@ def _aggregate_batch(records: list[dict]) -> dict:
             "flag":            latest.get("flag"),
             "avg_latency_ms":  round(sum(lats) / n, 2),
             "avg_packet_loss": round(sum(loss) / n, 2),
-            "avg_health":      round(sum(hlth) / n, 1),
+            "avg_health_score": round(sum(hlth) / n, 1),
             "outage_count":    ot,
             "sample_count":    n,
             "is_outage":       ot > n * 0.3,
@@ -212,10 +214,13 @@ def _aggregate_batch(records: list[dict]) -> dict:
     return aggs
 
 
-def _write_aggs_to_s3(aggs: dict) -> None:
+def _write_results_to_s3(records: list[dict], aggs: dict) -> None:
     key  = f"{S3_SPEED_PREFIX}lambda_aggs/{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
     body = json.dumps(list(aggs.values()), default=str).encode()
+    raw_key = f"raw/lambda/{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.json"
+    raw_body = "\n".join(json.dumps(record, default=str) for record in records).encode()
     try:
+        _s3().put_object(Bucket=S3_BUCKET, Key=raw_key, Body=raw_body, ContentType="application/x-ndjson")
         _s3().put_object(Bucket=S3_BUCKET, Key=key, Body=body, ContentType="application/json")
         # Also overwrite the "latest" file for dashboard consumption
         _s3().put_object(
@@ -258,7 +263,7 @@ def lambda_handler(event: dict, context) -> dict:
 
     # 3. Aggregate + write to S3
     aggs = _aggregate_batch(probe_records)
-    _write_aggs_to_s3(aggs)
+    _write_results_to_s3(probe_records, aggs)
 
     duration_ms = round((time.perf_counter() - t_start) * 1000, 1)
     log.info("Processed %d records in %s ms", len(probe_records), duration_ms)

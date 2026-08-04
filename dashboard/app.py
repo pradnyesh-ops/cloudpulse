@@ -83,6 +83,41 @@ def _broadcast_sse(event_type: str, data: object) -> None:
 # Imported lazily to avoid circular imports before config is ready.
 _speed_state: dict = {}
 _merge_state:  dict = {}
+_sqs_client = None
+_sqs_queue_url: str | None = None
+
+
+def _get_sqs_queue_url() -> str:
+    global _sqs_client, _sqs_queue_url
+    if _sqs_queue_url:
+        return _sqs_queue_url
+    import boto3
+    from config import SQS_QUEUE_NAME
+    _sqs_client = boto3.client("sqs", region_name=AWS_REGION)
+    _sqs_queue_url = _sqs_client.get_queue_url(QueueName=SQS_QUEUE_NAME)["QueueUrl"]
+    return _sqs_queue_url
+
+
+def _publish_to_sqs(record: dict) -> None:
+    if _sqs_client is None:
+        _get_sqs_queue_url()
+    _sqs_client.send_message(QueueUrl=_sqs_queue_url, MessageBody=json.dumps(record))
+
+
+def _load_live_state_from_dynamodb() -> list[dict]:
+    try:
+        import boto3
+        from config import DYNAMODB_TABLE
+        table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(DYNAMODB_TABLE)
+        response = table.scan()
+        items = response.get("Items", [])
+        while response.get("LastEvaluatedKey"):
+            response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+            items.extend(response.get("Items", []))
+        return items
+    except Exception as exc:
+        log.warning("DynamoDB live-state read failed: %s", exc)
+        return []
 
 
 def _load_json_file(rel: str) -> object:
@@ -106,7 +141,7 @@ def _load_from_s3(key: str) -> object:
 
 
 def _fetch(local_rel: str, s3_key: str) -> object:
-    if DEMO_MODE or USE_REAL_STREAM:
+    if DEMO_MODE:
         return _load_json_file(local_rel)
     return _load_from_s3(s3_key)
 
@@ -180,7 +215,7 @@ def _start_demo_threads() -> None:
             log.info("Wikimedia real-stream producer started")
             for record in stream_wikimedia():
                 try:
-                    ingest_record(record)
+                    _publish_to_sqs(record)
                     _broadcast_sse("outage_event", {
                         "region":  record["region_name"],
                         "country": record["country_name"],
@@ -277,6 +312,10 @@ def index():
 
 @app.route("/api/map-data")
 def api_map_data():
+    if USE_REAL_STREAM and not DEMO_MODE:
+        records = _load_live_state_from_dynamodb()
+        if records:
+            return jsonify(_normalize_probe_records({r.get("region_id", ""): r for r in records}))
     # 1. Try fully merged file (speed + batch combined)
     data = _fetch("merged-results/merged_regions.json", "merged-results/merged_regions.json")
     if data:
@@ -293,6 +332,10 @@ def api_map_data():
 
 @app.route("/api/global")
 def api_global():
+    if USE_REAL_STREAM and not DEMO_MODE:
+        records = _load_live_state_from_dynamodb()
+        if records:
+            return jsonify(_global_from_state({r.get("region_id", ""): r for r in records}))
     data = _fetch("merged-results/merged_global.json", "merged-results/merged_global.json")
     if data:
         return jsonify(data)
@@ -308,6 +351,10 @@ def api_global():
 
 @app.route("/api/top-affected")
 def api_top_affected():
+    if USE_REAL_STREAM and not DEMO_MODE:
+        records = _load_live_state_from_dynamodb()
+        if records:
+            return jsonify(_normalize_probe_records({r.get("region_id", ""): r for r in records})[:10])
     data = _fetch("merged-results/top_affected.json", "merged-results/top_affected.json")
     if data:
         return jsonify(data[:10])
